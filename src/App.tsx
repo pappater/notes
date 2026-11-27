@@ -1,9 +1,20 @@
-import { X } from 'lucide-react';
+import { Moon, RefreshCw, Search, Sun, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { IndexRail } from './components/IndexRail.tsx';
-import { ReadingCanvas } from './components/ReadingCanvas.tsx';
+import { EssayCurtain } from './components/EssayCurtain.tsx';
+import { ListView } from './components/ListView.tsx';
+import { WheelView } from './components/WheelView.tsx';
 import { getStaticBundledPosts, syncPostsFromGitHub } from './lib/markdownPosts.ts';
-import type { ArchiveSyncMeta, BlogPost, EssayShelf } from './types/blog.ts';
+import type { BlogPost, EssayShelf } from './types/blog.ts';
+
+type GalleryMode = 'wheel' | 'list';
+
+const SHELF_FILTERS: { id: EssayShelf | 'All'; label: string }[] = [
+  { id: 'All', label: 'All' },
+  { id: 'Life & Reflections', label: 'Life' },
+  { id: 'Travel & Places', label: 'Travel' },
+  { id: 'Code & Craft', label: 'Code' },
+  { id: 'Tamil', label: 'Tamil' },
+];
 
 function readPostIdFromUrl(): string | null {
   const params = new URLSearchParams(window.location.search);
@@ -13,22 +24,15 @@ function readPostIdFromUrl(): string | null {
 export default function App() {
   const initialData = useMemo(() => getStaticBundledPosts(), []);
   const [posts, setPosts] = useState<BlogPost[]>(initialData.posts);
-  const [meta, setMeta] = useState<ArchiveSyncMeta>(initialData.meta);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
-  const [selectedPostId, setSelectedPostId] = useState<string | null>(() => {
-    const fromUrl = readPostIdFromUrl();
-    if (fromUrl && initialData.posts.some((p) => p.id === fromUrl)) {
-      return fromUrl;
-    }
-    return initialData.posts[0]?.id || null;
-  });
-
-  const [searchQuery, setSearchQuery] = useState('');
+  const [mode, setMode] = useState<GalleryMode>('wheel');
+  const [activeIndex, setActiveIndex] = useState(0);
   const [selectedShelf, setSelectedShelf] = useState<EssayShelf | 'All'>('All');
-  const [isFocusMode, setIsFocusMode] = useState(false);
-  const [mobileIndexOpen, setMobileIndexOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [openPostId, setOpenPostId] = useState<string | null>(() => readPostIdFromUrl());
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -45,193 +49,243 @@ export default function App() {
     try {
       localStorage.setItem('blog_theme', isDark ? 'dark' : 'light');
     } catch {
-      // Ignore storage failures
+      // Ignore storage error
     }
   }, [isDark]);
 
-  const handleSyncGitHub = useCallback(async (showNotice = true) => {
-    setIsSyncing(true);
-    try {
-      const synced = await syncPostsFromGitHub();
-      setPosts(synced.posts);
-      setMeta(synced.meta);
-      setSelectedPostId((current) => {
-        if (current && synced.posts.some((p) => p.id === current)) return current;
-        return synced.posts[0]?.id || null;
-      });
-      if (showNotice) {
-        if (synced.meta.newOrUpdatedCount > 0) {
-          setSyncNotice(
-            `Synced ${synced.meta.totalCount} (${synced.meta.newOrUpdatedCount} new from GitHub)`
-          );
-        } else {
-          setSyncNotice(`Up to date · ${synced.meta.totalCount} posts`);
-        }
-        setTimeout(() => setSyncNotice(null), 3500);
-      }
-    } catch (err) {
-      if (showNotice) {
-        const msg = err instanceof Error ? err.message : 'GitHub sync unavailable';
-        setSyncNotice(msg);
-        setTimeout(() => setSyncNotice(null), 3500);
-      }
-    } finally {
-      setIsSyncing(false);
-    }
-  }, []);
+  const filteredPosts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return posts.filter((post) => {
+      if (selectedShelf !== 'All' && post.shelf !== selectedShelf) return false;
+      if (!q) return true;
+      return (
+        post.title.toLowerCase().includes(q) ||
+        post.filename.toLowerCase().includes(q) ||
+        post.content.toLowerCase().includes(q)
+      );
+    });
+  }, [posts, selectedShelf, searchQuery]);
 
-  // Browser back/forward support for ?post=<id>
+  // Keep activeIndex in bounds when filtering changes
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [selectedShelf, searchQuery]);
+
   useEffect(() => {
     const onPopState = () => {
-      const id = readPostIdFromUrl();
-      if (id) setSelectedPostId(id);
+      setOpenPostId(readPostIdFromUrl());
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  const selectPost = useCallback((post: BlogPost) => {
-    setSelectedPostId(post.id);
-    setMobileIndexOpen(false);
-    const url = new URL(window.location.href);
-    url.searchParams.set('post', post.id);
-    window.history.pushState({ postId: post.id }, '', url.toString());
-  }, []);
-
-  const activePost = useMemo(() => {
-    if (posts.length === 0) return null;
-    return posts.find((p) => p.id === selectedPostId) || posts[0];
-  }, [posts, selectedPostId]);
-
-  const handleRandomPost = useCallback(() => {
-    if (posts.length === 0) return;
-    const pool = posts.filter((p) => p.id !== activePost?.id);
-    const pick = (pool.length > 0 ? pool : posts)[
-      Math.floor(Math.random() * (pool.length > 0 ? pool.length : posts.length))
-    ];
-    selectPost(pick);
-  }, [posts, activePost?.id, selectPost]);
-
-  // Keyboard shortcuts: / focus search, f toggle focus mode, ArrowLeft/Right step essays
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const inInput =
+      if (
         e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement ||
-        e.target instanceof HTMLSelectElement;
-
-      if (e.key === 'Escape' && mobileIndexOpen) {
-        setMobileIndexOpen(false);
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        if (e.key === 'Escape') {
+          setSearchOpen(false);
+          setSearchQuery('');
+        }
         return;
       }
-
-      if (inInput) return;
-
-      if (e.key === '/') {
+      if (e.key === '/' && !openPostId) {
         e.preventDefault();
-        setIsFocusMode(false);
+        setSearchOpen(true);
         setTimeout(() => searchInputRef.current?.focus(), 20);
-      } else if (e.key.toLowerCase() === 'f') {
-        setIsFocusMode((v) => !v);
-      } else if (e.key === 'ArrowLeft' && activePost) {
-        const idx = posts.findIndex((p) => p.id === activePost.id);
-        if (idx > 0) selectPost(posts[idx - 1]);
-      } else if (e.key === 'ArrowRight' && activePost) {
-        const idx = posts.findIndex((p) => p.id === activePost.id);
-        if (idx >= 0 && idx < posts.length - 1) selectPost(posts[idx + 1]);
       }
     };
-
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activePost, posts, selectPost, mobileIndexOpen]);
+  }, [openPostId]);
+
+  const handleOpenPost = useCallback(
+    (post: BlogPost) => {
+      const idx = filteredPosts.findIndex((p) => p.id === post.id);
+      if (idx >= 0) setActiveIndex(idx);
+      setOpenPostId(post.id);
+      const url = new URL(window.location.href);
+      url.searchParams.set('post', post.id);
+      window.history.pushState({ postId: post.id }, '', url.toString());
+    },
+    [filteredPosts]
+  );
+
+  const handleClosePost = useCallback(() => {
+    setOpenPostId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('post');
+    window.history.pushState({}, '', url.toString());
+  }, []);
+
+  const handleSyncGitHub = useCallback(async () => {
+    setIsSyncing(true);
+    try {
+      const synced = await syncPostsFromGitHub();
+      setPosts(synced.posts);
+      if (synced.meta.newOrUpdatedCount > 0) {
+        setSyncNotice(`${synced.meta.newOrUpdatedCount} new synced`);
+      } else {
+        setSyncNotice(`${synced.meta.totalCount} up to date`);
+      }
+      setTimeout(() => setSyncNotice(null), 3000);
+    } catch {
+      setSyncNotice('Sync unavailable');
+      setTimeout(() => setSyncNotice(null), 3000);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, []);
+
+  const openedPost = useMemo(() => {
+    if (!openPostId) return null;
+    return posts.find((p) => p.id === openPostId) || null;
+  }, [posts, openPostId]);
 
   return (
-    <div className="h-dvh w-full overflow-hidden flex bg-[#FBF9F5] dark:bg-[#141210] text-stone-900 dark:text-stone-100">
-      {/* Desktop Split-Pane Left Index Rail */}
-      {!isFocusMode && (
-        <div className="hidden lg:block w-[350px] xl:w-[390px] h-full shrink-0">
-          <IndexRail
-            posts={posts}
-            meta={meta}
-            selectedPostId={activePost?.id || null}
-            onSelectPost={selectPost}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            selectedShelf={selectedShelf}
-            onSelectShelf={setSelectedShelf}
-            onSyncGitHub={() => handleSyncGitHub(true)}
-            isSyncing={isSyncing}
-            syncNotice={syncNotice}
-            isDark={isDark}
-            onToggleTheme={() => setIsDark((d) => !d)}
-            onRandomPost={handleRandomPost}
-            searchInputRef={searchInputRef}
-          />
-        </div>
-      )}
+    <div className="min-h-dvh w-full bg-[#FBF9F5] dark:bg-[#0E0D0C] text-stone-950 dark:text-stone-50">
+      {/* Floating Minimalist Mode Switcher — Top Left (no header bar) */}
+      <div className="fixed top-6 left-5 sm:left-10 lg:left-12 z-30 flex items-baseline gap-1.5 text-sm sm:text-base font-medium">
+        <button
+          type="button"
+          onClick={() => setMode('wheel')}
+          className={`transition-opacity cursor-pointer whitespace-nowrap shrink-0 underline-offset-4 ${
+            mode === 'wheel'
+              ? 'opacity-100 underline decoration-stone-900 dark:decoration-stone-100'
+              : 'opacity-40 hover:opacity-80'
+          }`}
+        >
+          Wheel,
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('list')}
+          className={`transition-opacity cursor-pointer whitespace-nowrap shrink-0 underline-offset-4 ${
+            mode === 'list'
+              ? 'opacity-100 underline decoration-stone-900 dark:decoration-stone-100'
+              : 'opacity-40 hover:opacity-80'
+          }`}
+        >
+          List
+        </button>
+      </div>
 
-      {/* Mobile Slide-Over Index Drawer */}
-      {mobileIndexOpen && (
-        <div className="lg:hidden fixed inset-0 z-50 flex">
-          <div
-            className="fixed inset-0 bg-black/40 backdrop-blur-[1px]"
-            onClick={() => setMobileIndexOpen(false)}
-          />
-          <div className="relative z-10 w-[86vw] max-w-[360px] h-full shadow-2xl">
+      {/* Floating Minimalist Inline Controls — Top Right (no header bar) */}
+      <div className="fixed top-6 right-5 sm:right-10 lg:right-12 z-30 flex items-center gap-3 sm:gap-5 text-xs sm:text-sm">
+        {/* Inline Shelf Filters */}
+        <div className="hidden md:flex items-center gap-3" role="tablist" aria-label="Filter essays by shelf">
+          {SHELF_FILTERS.map((shelf) => {
+            const active = selectedShelf === shelf.id;
+            return (
+              <button
+                key={shelf.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setSelectedShelf(shelf.id)}
+                className={`transition-opacity cursor-pointer whitespace-nowrap shrink-0 underline-offset-4 ${
+                  active
+                    ? 'opacity-100 font-medium text-[#9A3412] dark:text-orange-400 underline'
+                    : 'opacity-45 hover:opacity-90'
+                }`}
+              >
+                {shelf.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Inline Expandable Search */}
+        {searchOpen ? (
+          <div className="flex items-center gap-1.5 border-b border-stone-400 dark:border-stone-600 pb-0.5">
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Filter..."
+              aria-label="Search essays"
+              className="w-28 sm:w-40 bg-transparent text-xs sm:text-sm focus:outline-none placeholder:text-stone-400"
+            />
             <button
               type="button"
-              onClick={() => setMobileIndexOpen(false)}
-              aria-label="Close essay index"
-              className="absolute top-4 right-4 z-20 p-1.5 text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white rounded-md cursor-pointer"
+              onClick={() => {
+                setSearchQuery('');
+                setSearchOpen(false);
+              }}
+              aria-label="Close search"
+              className="opacity-60 hover:opacity-100 cursor-pointer"
             >
-              <X className="w-4 h-4" />
+              <X className="w-3.5 h-3.5" />
             </button>
-            <IndexRail
-              posts={posts}
-              meta={meta}
-              selectedPostId={activePost?.id || null}
-              onSelectPost={selectPost}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              selectedShelf={selectedShelf}
-              onSelectShelf={setSelectedShelf}
-              onSyncGitHub={() => handleSyncGitHub(true)}
-              isSyncing={isSyncing}
-              syncNotice={syncNotice}
-              isDark={isDark}
-              onToggleTheme={() => setIsDark((d) => !d)}
-              onRandomPost={handleRandomPost}
-            />
           </div>
-        </div>
-      )}
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setSearchOpen(true);
+              setTimeout(() => searchInputRef.current?.focus(), 20);
+            }}
+            aria-label="Search essays"
+            className="opacity-55 hover:opacity-100 transition-opacity cursor-pointer inline-flex items-center gap-1 whitespace-nowrap shrink-0"
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Search</span>
+          </button>
+        )}
 
-      {/* Right Full-Height Serene Reading Canvas */}
-      <main className="flex-1 h-full min-w-0">
-        {activePost ? (
-          <ReadingCanvas
-            post={activePost}
-            allPosts={posts}
-            onSelectPost={selectPost}
-            isFocusMode={isFocusMode}
-            onToggleFocusMode={() => setIsFocusMode((v) => !v)}
-            onOpenMobileIndex={() => setMobileIndexOpen(true)}
+        {/* GitHub Sync */}
+        <button
+          type="button"
+          onClick={handleSyncGitHub}
+          disabled={isSyncing}
+          className="opacity-55 hover:opacity-100 transition-opacity cursor-pointer inline-flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-40"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+          <span className="hidden sm:inline">{syncNotice || 'Sync'}</span>
+        </button>
+
+        {/* Paper / Ink Theme */}
+        <button
+          type="button"
+          onClick={() => setIsDark((d) => !d)}
+          aria-label={isDark ? 'Switch to Paper mode' : 'Switch to Ink mode'}
+          className="opacity-55 hover:opacity-100 transition-opacity cursor-pointer inline-flex items-center gap-1 whitespace-nowrap shrink-0"
+        >
+          {isDark ? <Sun className="w-3.5 h-3.5 text-orange-400" /> : <Moon className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+
+      {/* Main Gallery Canvas (Wheel or List) */}
+      <main>
+        {mode === 'wheel' ? (
+          <WheelView
+            posts={filteredPosts}
+            activeIndex={activeIndex}
+            onChangeIndex={setActiveIndex}
+            onOpenPost={handleOpenPost}
           />
         ) : (
-          <div className="h-full flex items-center justify-center p-8 text-center">
-            <div className="max-w-md space-y-3">
-              <h2 className="font-display text-2xl font-semibold text-stone-900 dark:text-stone-100">
-                No Markdown posts found in _posts
-              </h2>
-              <p className="text-sm text-stone-500 dark:text-stone-400">
-                Add any <span className="font-mono-code">.md</span> file to the{' '}
-                <span className="font-mono-code">_posts/</span> directory in this repository.
-              </p>
-            </div>
-          </div>
+          <ListView
+            posts={filteredPosts}
+            activeIndex={activeIndex}
+            onHoverIndex={setActiveIndex}
+            onOpenPost={handleOpenPost}
+          />
         )}
       </main>
+
+      {/* Slide-Up Editorial Reading Curtain */}
+      {openedPost && (
+        <EssayCurtain
+          post={openedPost}
+          allPosts={filteredPosts.length > 0 ? filteredPosts : posts}
+          onClose={handleClosePost}
+          onSelectPost={handleOpenPost}
+        />
+      )}
     </div>
   );
 }
