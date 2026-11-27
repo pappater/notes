@@ -1,0 +1,6 @@
+{
+  "name": "/blog — Archive of a Clueless Man",
+  "description": "Interactive literary and technical essay archive synced live with the pappater/blog Jekyll markdown repository on GitHub.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
